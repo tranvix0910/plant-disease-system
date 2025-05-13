@@ -8,7 +8,7 @@
 #include <WebServer.h>
 
 // Định nghĩa chân cảm biến
-#define DHTPIN 2      // Chân kết nối DHT11
+#define DHTPIN 18     // Chân kết nối DHT11
 #define DHTTYPE DHT11 // Loại cảm biến DHT
 #define SOIL_MOISTURE_PIN 34 // Chân kết nối cảm biến độ ẩm đất (ADC)
 #define WATER_PUMP_PIN 5    // Chân điều khiển bơm nước
@@ -24,15 +24,19 @@
 // Khai báo cảm biến
 DHT dht(DHTPIN, DHTTYPE);
 
-const char* ssid = "311HHN Lau 1";
-const char* password = "@@1234abcdlau1";
+// const char* ssid = "311HHN Lau 1";
+// const char* password = "@@1234abcdlau1";
+const char* ssid = "AndroidAP9B0A";
+const char* password = "quynhquynh";
+
+
 const char* Gemini_Token = "AIzaSyA3ogt7LgUlDTuHqtMPZsFFompKnuYADAw";
 const char* Gemini_Max_Tokens = "10000";
 #define BOTtoken "7729298728:AAGwPQvhVE8sc9FlNHDDSLqUU8WLVzt-0QU"
 #define CHAT_ID_1 "5797970828"
 #define CHAT_ID_2 "1281777025"
 
-String GOOGLE_SCRIPT_ID = "AKfycbwCfxuDEZO0xSfDD4Qnm5dkXGz1yojbaY9wlmmbrBELmWvp8Rv7q3YDaMUwOVHG1jsqtg"; 
+String GOOGLE_SCRIPT_ID = "AKfycbyc35lHlrtRBJuDLHe6S0J6tfLUoeXDdRCNGCn1xfNODKvugb28w5pMcGAAuQcMT8ShWA"; 
 // https://script.google.com/macros/s/AKfycbyQDiyTUR2SpwHikvLMXQDJ478LS1SOPTMyiO9TWAQIrVImQNv2Me5f_MhxkdaUmaGPEg/exec
 
 // Tọa độ TP. Hồ Chí Minh
@@ -109,6 +113,9 @@ void sendDetailedReportToGemini(JsonObject& summary) {
   float maxTemp = summary["maxTemp"].as<float>();
   float minTemp = summary["minTemp"].as<float>();
   float avgHumidity = summary["avgHumidity"].as<float>();
+  float avgSoilMoisture = summary["avgSoilMoisture"].as<float>();
+  float maxSoilMoisture = summary["maxSoilMoisture"].as<float>();
+  float minSoilMoisture = summary["minSoilMoisture"].as<float>();
   
   // Chuẩn bị dữ liệu chi tiết từ mảng data nhưng giới hạn số lượng điểm dữ liệu
   String dataPoints = "";
@@ -128,7 +135,8 @@ void sendDetailedReportToGemini(JsonObject& summary) {
     JsonObject point = dataArray[i].as<JsonObject>();
     dataPoints += "- Thời gian: " + point["time"].as<String>() + ", ";
     dataPoints += "Nhiệt độ: " + String(point["temperature"].as<float>(), 1) + "°C, ";
-    dataPoints += "Độ ẩm: " + String(point["humidity"].as<float>(), 0) + "%\n";
+    dataPoints += "Độ ẩm không khí: " + String(point["humidity"].as<float>(), 0) + "%, ";
+    dataPoints += "Độ ẩm đất: " + String(point["soil_moisture"].as<float>(), 0) + "%\n";
   }
   
   // Tạo prompt hỏi Gemini - làm ngắn gọn để giảm kích thước
@@ -136,19 +144,20 @@ void sendDetailedReportToGemini(JsonObject& summary) {
   prompt += "Ngày: " + date + "\n";
   prompt += "Số đo: " + String(readings) + "\n";
   prompt += "Nhiệt độ: TB=" + String(avgTemp, 1) + "°C, Max=" + String(maxTemp, 1) + "°C, Min=" + String(minTemp, 1) + "°C\n";
-  prompt += "Độ ẩm TB: " + String(avgHumidity, 1) + "%\n\n";
+  prompt += "Độ ẩm không khí TB: " + String(avgHumidity, 1) + "%\n";
+  prompt += "Độ ẩm đất: TB=" + String(avgSoilMoisture, 1) + "%, Max=" + String(maxSoilMoisture, 1) + "%, Min=" + String(minSoilMoisture, 1) + "%\n\n";
   
   prompt += "Dữ liệu mẫu:\n";
   prompt += dataPoints + "\n";
   
   prompt += "Yêu cầu:\n";
-  prompt += "1. Phân tích môi trường (nhiệt độ, độ ẩm) trong ngày.\n";
+  prompt += "1. Phân tích môi trường (nhiệt độ, độ ẩm không khí, độ ẩm đất) trong ngày.\n";
   prompt += "2. Biến động nhiệt độ và độ ẩm trong ngày.\n";
-  prompt += "3. Đánh giá mức độ phù hợp cho cây cà chua.\n";
-  prompt += "4. Đề xuất biện pháp tối ưu điều kiện trồng trọt.\n";
+  prompt += "3. Đánh giá mức độ phù hợp cho cây cà chua dựa trên các thông số trên.\n";
+  prompt += "4. Đề xuất biện pháp tối ưu điều kiện trồng trọt, đặc biệt là lịch tưới nước dựa trên độ ẩm đất.\n";
   prompt += "5. Dự báo rủi ro sâu bệnh, nấm mốc.\n\n";
   
-  prompt += "Trình bày ngắn gọn, chuyên nghiệp, tối đa 800 từ.";
+  prompt += "Trình bày ngắn gọn, chuyên nghiệp, tối đa 250 từ.";
   
   // Hiển thị thông báo đang gửi
   bot.sendMessage(CHAT_ID_1, "🔍 *ĐANG PHÂN TÍCH DỮ LIỆU*\n\nVui lòng đợi trong giây lát...", "Markdown");
@@ -188,11 +197,13 @@ void sendDetailedReportToGemini(JsonObject& summary) {
         String reportMessage = "📊 *BÁO CÁO PHÂN TÍCH* 📊\n\n";
         reportMessage += "📅 *Ngày*: " + date + "\n";
         reportMessage += "🌡️ *Nhiệt độ*: " + String(avgTemp, 1) + "°C (TB), " + String(maxTemp, 1) + "°C (Max), " + String(minTemp, 1) + "°C (Min)\n";
-        reportMessage += "💧 *Độ ẩm TB*: " + String(avgHumidity, 1) + "%\n\n";
+        reportMessage += "💧 *Độ ẩm không khí TB*: " + String(avgHumidity, 1) + "%\n";
+        reportMessage += "🌱 *Độ ẩm đất TB*: " + String(avgSoilMoisture, 1) + "%\n\n";
         
         // Thay thế các từ khóa bằng emojis để làm báo cáo sinh động hơn
         analysis.replace("Nhiệt độ", "🌡️ Nhiệt độ");
-        analysis.replace("Độ ẩm", "💧 Độ ẩm");
+        analysis.replace("Độ ẩm không khí", "💧 Độ ẩm không khí");
+        analysis.replace("Độ ẩm đất", "🌱 Độ ẩm đất");
         analysis.replace("Phân tích", "📊 Phân tích");
         analysis.replace("Khuyến nghị", "💡 Khuyến nghị");
         analysis.replace("Lưu ý", "⚠️ Lưu ý");
@@ -240,7 +251,8 @@ void sendDetailedReportToGemini(JsonObject& summary) {
       String fallbackMessage = "📊 *BÁO CÁO PHÂN TÍCH CƠ BẢN* 📊\n\n";
       fallbackMessage += "📅 *Ngày*: " + date + "\n";
       fallbackMessage += "🌡️ *Nhiệt độ*: " + String(avgTemp, 1) + "°C (TB), " + String(maxTemp, 1) + "°C (Max), " + String(minTemp, 1) + "°C (Min)\n";
-      fallbackMessage += "💧 *Độ ẩm TB*: " + String(avgHumidity, 1) + "%\n\n";
+      fallbackMessage += "💧 *Độ ẩm không khí TB*: " + String(avgHumidity, 1) + "%\n";
+      fallbackMessage += "🌱 *Độ ẩm đất TB*: " + String(avgSoilMoisture, 1) + "%\n\n";
       
       fallbackMessage += "📝 *PHÂN TÍCH CƠ BẢN*:\n\n";
       
@@ -255,31 +267,51 @@ void sendDetailedReportToGemini(JsonObject& summary) {
         fallbackMessage += "🌡️ *Nhiệt độ cao vừa phải*: Nhiệt độ trung bình (" + String(avgTemp, 1) + "°C) hơi cao nhưng vẫn có thể chấp nhận được. Tăng cường tưới nước.\n\n";
       }
       
-      // Phân tích độ ẩm
+      // Phân tích độ ẩm không khí
       if (avgHumidity > 80) {
-        fallbackMessage += "💧 *Độ ẩm cao*: Độ ẩm trung bình (" + String(avgHumidity, 1) + "%) cao hơn mức tối ưu (65-75%). Rủi ro cao về các bệnh nấm và mốc. Cần cải thiện thông gió và giảm tưới nước.\n\n";
+        fallbackMessage += "💧 *Độ ẩm không khí cao*: Độ ẩm không khí trung bình (" + String(avgHumidity, 1) + "%) cao hơn mức tối ưu (65-75%). Rủi ro cao về các bệnh nấm và mốc. Cần cải thiện thông gió và giảm tưới nước.\n\n";
       } else if (avgHumidity < 50) {
-        fallbackMessage += "💧 *Độ ẩm thấp*: Độ ẩm trung bình (" + String(avgHumidity, 1) + "%) thấp hơn mức tối ưu (65-75%). Cần tăng cường tưới nước và che phủ đất.\n\n";
+        fallbackMessage += "💧 *Độ ẩm không khí thấp*: Độ ẩm không khí trung bình (" + String(avgHumidity, 1) + "%) thấp hơn mức tối ưu (65-75%). Cần tăng cường tưới nước và che phủ đất.\n\n";
       } else {
-        fallbackMessage += "💧 *Độ ẩm phù hợp*: Độ ẩm trung bình (" + String(avgHumidity, 1) + "%) gần với khoảng tối ưu (65-75%) cho cây cà chua.\n\n";
+        fallbackMessage += "💧 *Độ ẩm không khí phù hợp*: Độ ẩm không khí trung bình (" + String(avgHumidity, 1) + "%) gần với khoảng tối ưu (65-75%) cho cây cà chua.\n\n";
+      }
+      
+      // Phân tích độ ẩm đất
+      if (avgSoilMoisture > 80) {
+        fallbackMessage += "🌱 *Độ ẩm đất cao*: Độ ẩm đất trung bình (" + String(avgSoilMoisture, 1) + "%) quá cao. Cần giảm tưới nước để tránh úng và thối rễ.\n\n";
+      } else if (avgSoilMoisture < 30) {
+        fallbackMessage += "🌱 *Độ ẩm đất thấp*: Độ ẩm đất trung bình (" + String(avgSoilMoisture, 1) + "%) quá thấp. Cần tăng cường tưới nước ngay lập tức.\n\n";
+      } else if (avgSoilMoisture >= 30 && avgSoilMoisture <= 60) {
+        fallbackMessage += "🌱 *Độ ẩm đất tốt*: Độ ẩm đất trung bình (" + String(avgSoilMoisture, 1) + "%) nằm trong khoảng lý tưởng (30-60%) cho cây cà chua.\n\n";
+      } else {
+        fallbackMessage += "🌱 *Độ ẩm đất hơi cao*: Độ ẩm đất trung bình (" + String(avgSoilMoisture, 1) + "%) hơi cao nhưng chấp nhận được. Hạn chế tưới nước trong vài ngày tới.\n\n";
       }
       
       // Khuyến nghị
       fallbackMessage += "💡 *KHUYẾN NGHỊ*:\n";
       
+      // Khuyến nghị dựa trên cả nhiệt độ, độ ẩm không khí và độ ẩm đất
       if (avgTemp > 30 && avgHumidity > 80) {
-        fallbackMessage += "- Cải thiện thông gió để giảm độ ẩm\n";
+        fallbackMessage += "- Cải thiện thông gió để giảm độ ẩm không khí\n";
         fallbackMessage += "- Tưới nước vào buổi sáng sớm\n";
         fallbackMessage += "- Theo dõi các dấu hiệu bệnh nấm\n";
         fallbackMessage += "- Phun thuốc phòng bệnh nếu cần\n";
-      } else if (avgTemp > 30 && avgHumidity < 60) {
+      } else if (avgTemp > 30 && avgHumidity < 60 && avgSoilMoisture < 40) {
         fallbackMessage += "- Tăng tưới nước, tối ưu vào sáng sớm và chiều tối\n";
         fallbackMessage += "- Che phủ đất để giữ ẩm\n";
         fallbackMessage += "- Tạo bóng râm cho cây trong những giờ nắng gắt\n";
-      } else if (avgTemp < 20) {
+      } else if (avgTemp < 20 && avgSoilMoisture > 70) {
+        fallbackMessage += "- Giảm tưới nước khi nhiệt độ thấp\n";
         fallbackMessage += "- Sử dụng màng phủ để giữ nhiệt\n";
         fallbackMessage += "- Tưới nước vào buổi trưa khi ấm nhất\n";
-        fallbackMessage += "- Cân nhắc các biện pháp tăng nhiệt nếu có thể\n";
+      } else if (avgSoilMoisture < 30) {
+        fallbackMessage += "- Tăng gấp đôi lượng nước tưới\n";
+        fallbackMessage += "- Che phủ đất để giảm bay hơi\n";
+        fallbackMessage += "- Tưới 2 lần/ngày vào sáng sớm và chiều tối\n";
+      } else if (avgSoilMoisture > 80) {
+        fallbackMessage += "- Ngừng tưới nước trong 2-3 ngày\n";
+        fallbackMessage += "- Cải thiện thoát nước xung quanh khu vực trồng\n";
+        fallbackMessage += "- Kiểm tra rễ cây để phát hiện dấu hiệu thối rễ\n";
       }
       
       fallbackMessage += "\n⚠️ *Lưu ý*: Đây là phân tích cơ bản do kết nối đến Gemini không thành công. Để có phân tích chi tiết, hãy thử lại sau.";
@@ -351,6 +383,9 @@ void sendDailyReport() {
           float maxTemp = doc["summary"]["maxTemp"];
           float minTemp = doc["summary"]["minTemp"];
           float avgHumidity = doc["summary"]["avgHumidity"];
+          float avgSoilMoisture = doc["summary"]["avgSoilMoisture"];
+          float maxSoilMoisture = doc["summary"]["maxSoilMoisture"];
+          float minSoilMoisture = doc["summary"]["minSoilMoisture"];
           int readings = doc["summary"]["readings"];
           
           // Tạo tin nhắn báo cáo
@@ -361,7 +396,11 @@ void sendDailyReport() {
           message += "  • Trung bình: " + String(avgTemp, 1) + " °C\n";
           message += "  • Cao nhất: " + String(maxTemp, 1) + " °C\n";
           message += "  • Thấp nhất: " + String(minTemp, 1) + " °C\n\n";
-          message += "💧 *Độ ẩm trung bình*: " + String(avgHumidity, 1) + " %\n\n";
+          message += "💧 *Độ ẩm không khí trung bình*: " + String(avgHumidity, 1) + " %\n\n";
+          message += "🌱 *Độ ẩm đất*:\n";
+          message += "  • Trung bình: " + String(avgSoilMoisture, 1) + " %\n";
+          message += "  • Cao nhất: " + String(maxSoilMoisture, 1) + " %\n";
+          message += "  • Thấp nhất: " + String(minSoilMoisture, 1) + " %\n\n";
           
           // Thêm phân tích đơn giản
           message += "📝 *PHÂN TÍCH*:\n";
@@ -374,11 +413,19 @@ void sendDailyReport() {
           }
           
           if (avgHumidity > 80) {
-            message += "⚠️ Độ ẩm cao, có thể dẫn đến nấm bệnh\n";
+            message += "⚠️ Độ ẩm không khí cao, có thể dẫn đến nấm bệnh\n";
           } else if (avgHumidity < 40) {
-            message += "⚠️ Độ ẩm thấp, cần tăng cường tưới nước\n";
+            message += "⚠️ Độ ẩm không khí thấp, cần tăng cường tưới nước\n";
           } else {
-            message += "✅ Độ ẩm phù hợp cho cây phát triển\n";
+            message += "✅ Độ ẩm không khí phù hợp cho cây phát triển\n";
+          }
+          
+          if (avgSoilMoisture > 80) {
+            message += "⚠️ Độ ẩm đất cao, cần giảm tưới nước để tránh úng\n";
+          } else if (avgSoilMoisture < 30) {
+            message += "⚠️ Độ ẩm đất thấp, cần tăng cường tưới nước\n";
+          } else {
+            message += "✅ Độ ẩm đất phù hợp cho rễ cây phát triển\n";
           }
           
           message += "\n📎 Đường dẫn đến báo cáo đầy đủ:\nhttps://docs.google.com/spreadsheets/d/1TL3eZKGvPJPkzvwfWgkRNlIFvacSC1WcySUlwyRMPnA/edit";
@@ -948,7 +995,7 @@ void getTreatmentFromGemini(String diseaseName) {
 void handleDiseaseRequest() {
   if (server.hasArg("name")) {
     predictedDisease = server.arg("name");
-    predictedDisease.replace("_", " "); // Chuyển Tomato_Blight thành "Tomato Blight"
+    predictedDisease.replace("_", " ");
     lastDiseaseUpdateTime = millis();
     
     Serial.println("Nhận bệnh dự đoán từ ESP32-CAM: " + predictedDisease);
@@ -1070,7 +1117,6 @@ void startWaterPump() {
   
   Serial.println("Bắt đầu tưới nước tự động, thời gian hiện tại: " + String(currentTimeStr));
 }
-
 
 // Kiểm tra và thực hiện tưới nước tự động
 bool checkAndWater() {

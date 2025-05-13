@@ -1,8 +1,60 @@
+/* Edge Impulse Arduino examples
+ * Copyright (c) 2022 EdgeImpulse Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+// These sketches are tested with 2.0.4 ESP32 Arduino Core
+// https://github.com/espressif/arduino-esp32/releases/tag/2.0.4
+
+/* Includes ---------------------------------------------------------------- */
 #include <plant-disease-system_inferencing.h>
 #include "edge-impulse-sdk/dsp/image/image.hpp"
-#include "esp_camera.h"
-#include <TFT_eSPI.h>
 
+#include "esp_camera.h"
+
+// Select camera model - find more camera models in camera_pins.h file here
+// https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h
+
+#define CAMERA_MODEL_ESP_EYE // Has PSRAM
+//#define CAMERA_MODEL_AI_THINKER // Has PSRAM
+
+#if defined(CAMERA_MODEL_ESP_EYE)
+#define PWDN_GPIO_NUM    -1
+#define RESET_GPIO_NUM   -1
+#define XCLK_GPIO_NUM    4
+#define SIOD_GPIO_NUM    18
+#define SIOC_GPIO_NUM    23
+
+#define Y9_GPIO_NUM      36
+#define Y8_GPIO_NUM      37
+#define Y7_GPIO_NUM      38
+#define Y6_GPIO_NUM      39
+#define Y5_GPIO_NUM      35
+#define Y4_GPIO_NUM      14
+#define Y3_GPIO_NUM      13
+#define Y2_GPIO_NUM      34
+#define VSYNC_GPIO_NUM   5
+#define HREF_GPIO_NUM    27
+#define PCLK_GPIO_NUM    25
+
+#elif defined(CAMERA_MODEL_AI_THINKER)
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -21,6 +73,10 @@
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
+#else
+#error "Camera model not selected"
+#endif
+
 /* Constant defines -------------------------------------------------------- */
 #define EI_CAMERA_RAW_FRAME_BUFFER_COLS           320
 #define EI_CAMERA_RAW_FRAME_BUFFER_ROWS           240
@@ -29,40 +85,7 @@
 /* Private variables ------------------------------------------------------- */
 static bool debug_nn = false; // Set this to true to see e.g. features generated from the raw signal
 static bool is_initialised = false;
-uint8_t *snapshot_buf;
-
-// Khởi tạo đối tượng TFT
-TFT_eSPI tft = TFT_eSPI();
-
-// Định nghĩa màu UI
-#define UI_BACKGROUND     TFT_BLACK
-#define UI_HEADER_BG      0x4228  // Màu xanh đậm cho header
-#define UI_HEADER_TEXT    TFT_WHITE
-#define UI_ACCENT         0x5E5C  // Màu xanh dương cho accent
-#define UI_TEXT           TFT_WHITE
-#define UI_TEXT_SECONDARY 0xBDF7  // Màu xám nhạt
-#define UI_SUCCESS        0x07E0  // Xanh lá
-#define UI_WARNING        0xFD20  // Cam vàng
-#define UI_DANGER         0xF800  // Đỏ
-#define UI_INFO           0x07FF  // Xanh dương nhạt
-#define UI_BORDER         0x8430  // Màu viền xám
-
-// Định nghĩa font
-#define FONT_SMALL        1
-#define FONT_NORMAL       2
-#define FONT_LARGE        4
-
-// Ngưỡng để hiển thị kết quả (chỉ hiển thị trên 50%)
-#define CONFIDENCE_THRESHOLD 0.5f
-
-// Định nghĩa kích thước và vị trí các thành phần UI
-#define HEADER_HEIGHT     30
-#define RESULT_START_Y    90
-#define BORDER_RADIUS     4
-#define BAR_HEIGHT        10
-#define BAR_MAX_WIDTH     150
-#define RESULT_ITEM_HEIGHT 40
-#define PADDING           8
+uint8_t *snapshot_buf; //points to the output of the capture
 
 static camera_config_t camera_config = {
     .pin_pwdn = PWDN_GPIO_NUM,
@@ -100,106 +123,121 @@ static camera_config_t camera_config = {
 /* Function definitions ------------------------------------------------------- */
 bool ei_camera_init(void);
 void ei_camera_deinit(void);
-bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf);
+bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf) ;
 
-// Vẽ hình chữ nhật bo tròn góc
-void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
-  tft.drawRoundRect(x, y, w, h, r, color);
+/**
+ * @brief   Setup image sensor & start streaming
+ *
+ * @retval  false if initialisation failed
+ */
+bool ei_camera_init(void) {
+
+    if (is_initialised) return true;
+
+#if defined(CAMERA_MODEL_ESP_EYE)
+  pinMode(13, INPUT_PULLUP);
+  pinMode(14, INPUT_PULLUP);
+#endif
+
+    //initialize the camera
+    esp_err_t err = esp_camera_init(&camera_config);
+    if (err != ESP_OK) {
+      Serial.printf("Camera init failed with error 0x%x\n", err);
+      return false;
+    }
+
+    sensor_t * s = esp_camera_sensor_get();
+    // initial sensors are flipped vertically and colors are a bit saturated
+    if (s->id.PID == OV3660_PID) {
+      s->set_vflip(s, 1); // flip it back
+      s->set_brightness(s, 1); // up the brightness just a bit
+      s->set_saturation(s, 0); // lower the saturation
+    }
+
+#if defined(CAMERA_MODEL_M5STACK_WIDE)
+    s->set_vflip(s, 1);
+    s->set_hmirror(s, 1);
+#elif defined(CAMERA_MODEL_ESP_EYE)
+    s->set_vflip(s, 1);
+    s->set_hmirror(s, 1);
+    s->set_awb_gain(s, 1);
+#endif
+
+    is_initialised = true;
+    return true;
 }
 
-// Vẽ hình chữ nhật bo tròn góc đã tô màu
-void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
-  tft.fillRoundRect(x, y, w, h, r, color);
+/**
+ * @brief      Stop streaming of sensor data
+ */
+void ei_camera_deinit(void) {
+
+    //deinitialize the camera
+    esp_err_t err = esp_camera_deinit();
+
+    if (err != ESP_OK)
+    {
+        ei_printf("Camera deinit failed\n");
+        return;
+    }
+
+    is_initialised = false;
+    return;
 }
 
-// Vẽ thanh tiến trình
-void drawProgressBar(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t progress, uint16_t barColor, uint16_t bgColor) {
-  fillRoundRect(x, y, w, h, h/2, bgColor);
-  if (progress > 0) {
-    int16_t progressWidth = (progress * w) / 100;
-    if (progressWidth < h/2) progressWidth = h/2;
-    fillRoundRect(x, y, progressWidth, h, h/2, barColor);
-  }
-}
 
-// Khởi tạo giao diện
-void initializeUI() {
-  // Xóa toàn bộ màn hình
-  tft.fillScreen(UI_BACKGROUND);
-  
-  // Vẽ Header
-  fillRoundRect(0, 0, tft.width(), HEADER_HEIGHT, 0, UI_HEADER_BG);
-  tft.setTextColor(UI_HEADER_TEXT);
-  tft.setTextDatum(MC_DATUM); // Canh giữa
-  tft.setTextSize(1);
-  tft.drawString("PLANT DISEASE DETECTION", tft.width()/2, HEADER_HEIGHT/2, FONT_NORMAL);
-  
-  // Vẽ viền cho khu vực kết quả
-  drawRoundRect(PADDING, RESULT_START_Y - PADDING, 
-                tft.width() - PADDING*2, tft.height() - RESULT_START_Y, 
-                BORDER_RADIUS, UI_BORDER);
-  
-  // Khu vực trạng thái camera
-  fillRoundRect(PADDING, HEADER_HEIGHT + PADDING, tft.width() - PADDING*2, 40, BORDER_RADIUS, 0x2104);
-}
+/**
+ * @brief      Capture, rescale and crop image
+ *
+ * @param[in]  img_width     width of output image
+ * @param[in]  img_height    height of output image
+ * @param[in]  out_buf       pointer to store output image, NULL may be used
+ *                           if ei_camera_frame_buffer is to be used for capture and resize/cropping.
+ *
+ * @retval     false if not initialised, image captured, rescaled or cropped failed
+ *
+ */
+bool ei_camera_capture(uint32_t img_width, uint32_t img_height, uint8_t *out_buf) {
+    bool do_resize = false;
 
-// Hiển thị trạng thái camera
-void updateCameraStatus(bool success) {
-  tft.fillRoundRect(PADDING + 5, HEADER_HEIGHT + PADDING + 5, tft.width() - PADDING*2 - 10, 30, BORDER_RADIUS, UI_BACKGROUND);
-  
-  tft.setTextDatum(ML_DATUM); // Middle-Left
-  tft.setTextSize(1);
-  
-  if (success) {
-    tft.setTextColor(UI_SUCCESS);
-    tft.drawString("Camera: ", PADDING + 10, HEADER_HEIGHT + PADDING + 20, FONT_NORMAL);
-    tft.setTextColor(UI_TEXT);
-    tft.drawString("Connected", PADDING + 80, HEADER_HEIGHT + PADDING + 20, FONT_NORMAL);
-    
-    // Vẽ biểu tượng camera
-    tft.fillCircle(tft.width() - PADDING - 20, HEADER_HEIGHT + PADDING + 20, 8, UI_SUCCESS);
-  } else {
-    tft.setTextColor(UI_DANGER);
-    tft.drawString("Camera: ", PADDING + 10, HEADER_HEIGHT + PADDING + 20, FONT_NORMAL);
-    tft.setTextColor(UI_TEXT);
-    tft.drawString("Failed to initialize", PADDING + 80, HEADER_HEIGHT + PADDING + 20, FONT_NORMAL);
-    
-    // Vẽ biểu tượng lỗi
-    tft.fillCircle(tft.width() - PADDING - 20, HEADER_HEIGHT + PADDING + 20, 8, UI_DANGER);
-  }
-}
+    if (!is_initialised) {
+        ei_printf("ERR: Camera is not initialized\r\n");
+        return false;
+    }
 
-// Hiển thị tiêu đề khu vực kết quả
-void displayResultsHeader() {
-  tft.fillRect(PADDING, RESULT_START_Y, tft.width() - PADDING*2, 30, UI_BACKGROUND);
-  
-  tft.setTextColor(UI_ACCENT);
-  tft.setTextDatum(ML_DATUM); // Middle-Left
-  tft.setTextSize(1);
-  tft.drawString("DETECTION RESULTS (>50%)", PADDING + 10, RESULT_START_Y + 15, FONT_NORMAL);
-  
-  // Vẽ đường kẻ ngang phân tách
-  tft.drawLine(PADDING, RESULT_START_Y + 30, tft.width() - PADDING, RESULT_START_Y + 30, UI_BORDER);
-}
+    camera_fb_t *fb = esp_camera_fb_get();
 
-// Hiển thị thời gian xử lý
-void displayProcessingTime(int dsp_time, int classification_time) {
-  int y_pos = HEADER_HEIGHT + PADDING + 50;
-  
-  // Xóa khu vực hiển thị thời gian
-  tft.fillRect(PADDING, y_pos, tft.width() - PADDING*2, 30, UI_BACKGROUND);
-  
-  // Hiển thị thông tin thời gian
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextSize(1);
-  
-  tft.setTextColor(UI_TEXT_SECONDARY);
-  tft.drawString("Processing time:", PADDING + 10, y_pos + 10, FONT_SMALL);
-  
-  char timing_str[64];
-  sprintf(timing_str, "DSP: %dms | Classification: %dms", dsp_time, classification_time);
-  tft.setTextColor(UI_TEXT);
-  tft.drawString(timing_str, PADDING + 10, y_pos + 25, FONT_SMALL);
+    if (!fb) {
+        ei_printf("Camera capture failed\n");
+        return false;
+    }
+
+   bool converted = fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, snapshot_buf);
+
+   esp_camera_fb_return(fb);
+
+   if(!converted){
+       ei_printf("Conversion failed\n");
+       return false;
+   }
+
+    if ((img_width != EI_CAMERA_RAW_FRAME_BUFFER_COLS)
+        || (img_height != EI_CAMERA_RAW_FRAME_BUFFER_ROWS)) {
+        do_resize = true;
+    }
+
+    if (do_resize) {
+        ei::image::processing::crop_and_interpolate_rgb888(
+        out_buf,
+        EI_CAMERA_RAW_FRAME_BUFFER_COLS,
+        EI_CAMERA_RAW_FRAME_BUFFER_ROWS,
+        out_buf,
+        img_width,
+        img_height);
+    }
+
+
+    return true;
 }
 
 static int ei_camera_get_data(size_t offset, size_t length, float *out_ptr)
@@ -223,41 +261,33 @@ static int ei_camera_get_data(size_t offset, size_t length, float *out_ptr)
     return 0;
 }
 
-void setup(){
+void setup()
+{
+    // put your setup code here, to run once:
     Serial.begin(115200);
+    //comment out the below line to start inference immediately after upload
     while (!Serial);
     Serial.println("Edge Impulse Inferencing Demo");
-    
-    // Khởi tạo màn hình TFT
-    tft.init();
-    tft.setRotation(3); // Landscape mode
-    
-    // Khởi tạo giao diện
-    initializeUI();
-    
     if (ei_camera_init() == false) {
         ei_printf("Failed to initialize Camera!\r\n");
-        updateCameraStatus(false);
     }
     else {
         ei_printf("Camera initialized\r\n");
-        updateCameraStatus(true);
     }
 
-    // Hiển thị thông báo đang khởi động
-    tft.setTextColor(UI_TEXT);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("Starting inference...", tft.width()/2, RESULT_START_Y - 25, FONT_NORMAL);
-    
-    // Hiển thị tiêu đề khu vực kết quả
-    displayResultsHeader();
-    
     ei_printf("\nStarting continious inference in 2 seconds...\n");
     ei_sleep(2000);
 }
 
-void loop(){
+/**
+* @brief      Get data and run inferencing
+*
+* @param[in]  debug  Get debug info if true
+*/
+void loop()
+{
 
+    // instead of wait_ms, we'll wait on the signal, this allows threads to cancel us...
     if (ei_sleep(5) != EI_IMPULSE_OK) {
         return;
     }
@@ -292,76 +322,59 @@ void loop(){
     // print the predictions
     ei_printf("Predictions (DSP: %d ms., Classification: %d ms., Anomaly: %d ms.): \n",
                 result.timing.dsp, result.timing.classification, result.timing.anomaly);
+
+#if EI_CLASSIFIER_OBJECT_DETECTION == 1
+    ei_printf("Object detection bounding boxes:\r\n");
+    for (uint32_t i = 0; i < result.bounding_boxes_count; i++) {
+        ei_impulse_result_bounding_box_t bb = result.bounding_boxes[i];
+        if (bb.value == 0) {
+            continue;
+        }
+        ei_printf("  %s (%f) [ x: %u, y: %u, width: %u, height: %u ]\r\n",
+                bb.label,
+                bb.value,
+                bb.x,
+                bb.y,
+                bb.width,
+                bb.height);
+    }
+
+    // Print the prediction results (classification)
+#else
     ei_printf("Predictions:\r\n");
-    
-    // Hiển thị thời gian xử lý
-    displayProcessingTime(result.timing.dsp, result.timing.classification);
-    
-    // Xóa khu vực hiển thị kết quả (giữ viền)
-    tft.fillRect(PADDING + 1, RESULT_START_Y + 31, 
-                tft.width() - PADDING*2 - 2, tft.height() - RESULT_START_Y - PADDING - 32, 
-                UI_BACKGROUND);
-    
-    bool found_above_threshold = false;
-    int y_pos = RESULT_START_Y + 40;
-    
     for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
         ei_printf("  %s: ", ei_classifier_inferencing_categories[i]);
         ei_printf("%.5f\r\n", result.classification[i].value);
-        
-        // Chỉ hiển thị các dự đoán có giá trị > 50% lên màn hình LCD
-        if (result.classification[i].value > CONFIDENCE_THRESHOLD) {
-            found_above_threshold = true;
-            float confidence = result.classification[i].value;
-            
-            uint16_t bar_color;
-            // Chọn màu dựa trên độ tin cậy
-            if (confidence > 0.8f) {
-                bar_color = UI_DANGER; // Nguy cơ rất cao - đỏ
-            } else if (confidence > 0.65f) {
-                bar_color = UI_WARNING; // Nguy cơ cao - vàng cam
-            } else {
-                bar_color = UI_INFO; // Nguy cơ trung bình - xanh dương
-            }
-            
-            // Vẽ nền nhạt cho mỗi hàng kết quả
-            uint16_t rowBgColor = (i % 2 == 0) ? 0x1082 : UI_BACKGROUND;
-            tft.fillRect(PADDING + 5, y_pos, tft.width() - PADDING*2 - 10, RESULT_ITEM_HEIGHT, rowBgColor);
-            
-            // Tên bệnh
-            tft.setTextDatum(ML_DATUM);
-            tft.setTextColor(UI_TEXT);
-            tft.drawString(ei_classifier_inferencing_categories[i], PADDING + 15, y_pos + 12, FONT_NORMAL);
-            
-            // Phần trăm độ tin cậy
-            char conf_str[10];
-            sprintf(conf_str, "%.1f%%", confidence * 100.0f);
-            tft.setTextDatum(MR_DATUM);
-            tft.setTextColor(confidence > 0.8f ? UI_DANGER : UI_TEXT);
-            tft.drawString(conf_str, tft.width() - PADDING - 15, y_pos + 12, FONT_NORMAL);
-            
-            // Vẽ thanh tiến trình
-            int bar_width = BAR_MAX_WIDTH;
-            int progress_percent = confidence * 100;
-            drawProgressBar(PADDING + 15, y_pos + 25, bar_width, BAR_HEIGHT, 
-                           progress_percent, bar_color, 0x4208);
-            
-            // Di chuyển đến vị trí tiếp theo
-            y_pos += RESULT_ITEM_HEIGHT + 5;
+    }
+#endif
+
+    // Print anomaly result (if it exists)
+#if EI_CLASSIFIER_HAS_ANOMALY
+    ei_printf("Anomaly prediction: %.3f\r\n", result.anomaly);
+#endif
+
+#if EI_CLASSIFIER_HAS_VISUAL_ANOMALY
+    ei_printf("Visual anomalies:\r\n");
+    for (uint32_t i = 0; i < result.visual_ad_count; i++) {
+        ei_impulse_result_bounding_box_t bb = result.visual_ad_grid_cells[i];
+        if (bb.value == 0) {
+            continue;
         }
+        ei_printf("  %s (%f) [ x: %u, y: %u, width: %u, height: %u ]\r\n",
+                bb.label,
+                bb.value,
+                bb.x,
+                bb.y,
+                bb.width,
+                bb.height);
     }
-    
-    // Hiển thị thông báo nếu không có kết quả nào > 50%
-    if (!found_above_threshold) {
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextColor(UI_SUCCESS);
-        tft.drawString("No disease detected (>50%)", tft.width()/2, RESULT_START_Y + 80, FONT_NORMAL);
-        
-        // Vẽ biểu tượng tích
-        tft.fillCircle(tft.width()/2, RESULT_START_Y + 115, 15, 0x1084);
-        tft.setTextColor(UI_TEXT);
-        tft.drawString("✓", tft.width()/2, RESULT_START_Y + 115, FONT_LARGE);
-    }
-    
+#endif
+
+
     free(snapshot_buf);
+
 }
+
+#if !defined(EI_CLASSIFIER_SENSOR) || EI_CLASSIFIER_SENSOR != EI_CLASSIFIER_SENSOR_CAMERA
+#error "Invalid model for current sensor"
+#endif

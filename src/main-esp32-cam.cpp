@@ -5,6 +5,9 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <time.h>
+#include <WebServer.h>
+
+WebServer server(80);
 
 // Cấu hình Wi-Fi
 // const char* ssid = "311HHN Lau 1";
@@ -13,7 +16,7 @@ const char* ssid = "AndroidAP9B0A";
 const char* password = "quynhquynh";
 
 // Địa chỉ API server
-const char* serverUrl = "http://172.16.10.140:8000/predict/";
+const char* serverUrl = "http://192.168.43.56:8000/predict/";
 
 // Cấu hình thời gian   
 const char* ntpServer = "pool.ntp.org";
@@ -60,6 +63,14 @@ int lastCallDay = -1;      // Ngày cuối cùng đã gọi API
 
 bool enableAPITest = true;
 unsigned long lastAPITest = 0;
+
+// Khai báo biến toàn cục để theo dõi thời gian bắt đầu hiển thị kết quả
+unsigned long resultDisplayStartTime = 0;
+const unsigned long RESULT_DISPLAY_DURATION = 30000; // 30 giây
+
+// Thêm biến toàn cục để lưu thời gian cố định của kết quả API
+String resultDate = "";
+String resultTime = "";
 
 void drawImageBorder(int x, int y, int w, int h) {
   tft.drawRect(x-2, y-2, w+4, h+4, COLOR_BORDER);
@@ -471,10 +482,10 @@ void showResultOnTFT(String payload) {
   // Vẽ khung kết quả (bên phải ảnh camera)
   int resultX = 160;
   int resultY = 23; // Cách header 3px
-  int resultWidth = tft.width() - resultX - 10;
+  int resultWidth = tft.width() - resultX - 5;
   int resultHeight = tft.height() - resultY - 23; // Cách footer 3px
   
-  // Vẽ khung chứa kết quả phân tích
+  // Vẽ khung chứa kết quả phân tích - chỉ làm mới phần kết quả, không ảnh hưởng đến vùng hiển thị camera
   tft.fillRect(resultX, resultY, resultWidth, resultHeight, COLOR_BACKGROUND);
   tft.drawRect(resultX, resultY, resultWidth, resultHeight, COLOR_BORDER);
   tft.drawRect(resultX + 1, resultY + 1, resultWidth - 2, resultHeight - 2, COLOR_BORDER);
@@ -489,11 +500,31 @@ void showResultOnTFT(String payload) {
   // Phân tích JSON
   int classStart = payload.indexOf("\"predicted_class\":") + 19;
   int classEnd = payload.indexOf("\"", classStart);
-  String predictedClass = payload.substring(classStart, classEnd);
+  String predictedClass = "Unknown";
+  float confidence = 0.0;
   
-  int confStart = payload.indexOf("\"confidence\":") + 13;
-  int confEnd = payload.indexOf(",", confStart);
-  float confidence = payload.substring(confStart, confEnd).toFloat() * 100;
+  if (classStart > 19 && classEnd > classStart) {
+    predictedClass = payload.substring(classStart, classEnd);
+    
+    int confStart = payload.indexOf("\"confidence\":") + 13;
+    int confEnd = payload.indexOf(",", confStart);
+    if (confStart > 13 && confEnd > confStart) {
+      confidence = payload.substring(confStart, confEnd).toFloat() * 100;
+    }
+  } else {
+    // Xử lý trường hợp JSON không chứa predicted_class
+    tft.setCursor(resultX + 10, resultY + 45);
+    tft.setTextColor(COLOR_WARNING);
+    tft.print("Error parsing response");
+    
+    // Hiển thị payload nếu đủ ngắn
+    if (payload.length() < 100) {
+      tft.setCursor(resultX + 10, resultY + 65);
+      tft.setTextColor(COLOR_TEXT);
+      tft.print(payload);
+    }
+    return;
+  }
   
   // Hiển thị thông tin phân tích
   tft.setCursor(resultX + 10, resultY + 30);
@@ -532,17 +563,18 @@ void showResultOnTFT(String payload) {
   }
   
   // Hiển thị thời gian cập nhật chia làm 2 hàng: ngày và giờ
+  // Sử dụng thời gian đã lưu khi bắt đầu hiển thị kết quả
   tft.setCursor(resultX + 10, resultY + 105);
   tft.setTextColor(COLOR_TEXT);
   tft.print("Date: ");
   tft.setTextColor(COLOR_TIME);
-  tft.print(getCurrentDate());
+  tft.print(resultDate);
   
   tft.setCursor(resultX + 10, resultY + 120);
   tft.setTextColor(COLOR_TEXT);
   tft.print("Time: ");
   tft.setTextColor(COLOR_TIME);
-  tft.print(getCurrentTimeOnly());
+  tft.print(resultTime);
 }
 
 void sendImageToServer(camera_fb_t* fb) {
@@ -555,6 +587,7 @@ void sendImageToServer(camera_fb_t* fb) {
   HTTPClient http;
   
   http.begin(serverUrl);
+  http.setTimeout(20000); // Thêm timeout 20 giây
   
   // Specify content type for multipart form data
   http.addHeader("Content-Type", "multipart/form-data; boundary=diseasedetectionboundary");
@@ -593,10 +626,17 @@ void sendImageToServer(camera_fb_t* fb) {
       Serial.println("Server response:");
       Serial.println(payload);
       
+      // Lưu ngày giờ hiện tại khi nhận kết quả API
+      resultDate = getCurrentDate();
+      resultTime = getCurrentTimeOnly();
+      
       // Display results on TFT
       displayResults = true;
       resultText = payload;
       showResultOnTFT(payload);
+      
+      // Đặt thời gian bắt đầu hiển thị kết quả
+      resultDisplayStartTime = millis();
     }
   } else {
     Serial.printf("HTTP request failed, error: %s\n", http.errorToString(httpCode).c_str());
@@ -606,8 +646,6 @@ void sendImageToServer(camera_fb_t* fb) {
   }
   
   http.end();
-  delay(3000);
-  displayResults = false;
 }
 
 void showingImage() {
@@ -695,6 +733,10 @@ void testAPISend() {
       return;
     }
     
+    // Lưu ngày giờ hiện tại trước khi gửi API
+    resultDate = getCurrentDate();
+    resultTime = getCurrentTimeOnly();
+    
     // Gửi hình ảnh tới API server
     sendImageToServer(fb);
     
@@ -704,6 +746,276 @@ void testAPISend() {
     // Xóa thông báo
     tft.fillRect(5, 25, 150, 20, COLOR_BACKGROUND);
   }
+}
+
+// Thêm xử lý route /predict vào server 
+void handlePredict() {
+  Serial.println("Nhận yêu cầu nhận diện bệnh từ client");
+  
+  // Chụp ảnh từ camera
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb || fb->format != PIXFORMAT_JPEG) {
+    server.send(500, "application/json", "{\"error\":\"Camera capture failed\",\"timestamp\":\"" + getCurrentTimeOnly() + "\"}");
+    Serial.println("Lỗi chụp ảnh từ camera");
+    return;
+  }
+  
+  // Kiểm tra kết nối WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    server.send(500, "application/json", "{\"error\":\"WiFi not connected\",\"timestamp\":\"" + getCurrentTimeOnly() + "\"}");
+    esp_camera_fb_return(fb);
+    return;
+  }
+  
+  HTTPClient http;
+  
+  // Đảm bảo rằng URL API phù hợp
+  Serial.print("Đang gửi yêu cầu đến API URL: ");
+  Serial.println(serverUrl);
+  
+  http.begin(serverUrl);
+  http.setTimeout(20000); // Tăng timeout lên 20 giây
+  
+  // Thiết lập header cho multipart form data
+  http.addHeader("Content-Type", "multipart/form-data; boundary=diseasedetectionboundary");
+  
+  // Tạo dữ liệu multipart form
+  String head = "--diseasedetectionboundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"esp32cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+  String tail = "\r\n--diseasedetectionboundary--\r\n";
+  
+  uint32_t imageLen = fb->len;
+  uint32_t totalLen = head.length() + imageLen + tail.length();
+  
+  http.addHeader("Content-Length", String(totalLen));
+  
+  // Log kích thước ảnh và bộ nhớ còn lại
+  Serial.printf("Kích thước ảnh: %u bytes, Bộ nhớ heap: %u bytes\n", imageLen, ESP.getFreeHeap());
+  
+  uint8_t *buffer = (uint8_t*)malloc(totalLen);
+  if (buffer == NULL) {
+    server.send(500, "application/json", "{\"error\":\"Not enough memory to send image\",\"free_heap\":\"" + String(ESP.getFreeHeap()) + "\",\"timestamp\":\"" + getCurrentTimeOnly() + "\"}");
+    http.end();
+    esp_camera_fb_return(fb);
+    return;
+  }
+  
+  // Chuẩn bị dữ liệu để gửi đi
+  uint32_t pos = 0;
+  memcpy(buffer + pos, head.c_str(), head.length());
+  pos += head.length();
+  memcpy(buffer + pos, fb->buf, fb->len);
+  pos += fb->len;
+  memcpy(buffer + pos, tail.c_str(), tail.length());
+  
+  // Gửi yêu cầu POST và nhận kết quả
+  Serial.println("Bắt đầu gửi yêu cầu POST...");
+  int httpCode = http.POST(buffer, totalLen);
+  Serial.printf("Đã gửi yêu cầu POST, mã phản hồi: %d\n", httpCode);
+  
+  free(buffer);
+  
+  if (httpCode > 0) {
+    if (httpCode == HTTP_CODE_OK) {
+      String apiResult = http.getString();
+      Serial.println("Phản hồi từ server nhận diện:");
+      Serial.println(apiResult);
+      
+      // Lưu ngày giờ hiện tại khi nhận kết quả API
+      resultDate = getCurrentDate();
+      resultTime = getCurrentTimeOnly();
+      
+      // Hiển thị kết quả lên TFT
+      displayResults = true;
+      resultText = apiResult;
+      showResultOnTFT(apiResult);
+      
+      // Đặt thời gian bắt đầu hiển thị kết quả
+      resultDisplayStartTime = millis();
+      
+      // Trả kết quả về cho client
+      server.send(200, "application/json", apiResult);
+    } else {
+      String errorMessage = "{\"error\":\"HTTP request failed with code: " + String(httpCode) + "\",\"timestamp\":\"" + getCurrentTimeOnly() + "\"}";
+      server.send(httpCode, "application/json", errorMessage);
+      Serial.printf("Lỗi HTTP request, mã lỗi: %d\n", httpCode);
+    }
+  } else {
+    String errorMessage = "{\"error\":\"Connection to prediction server failed\",\"details\":\"" + http.errorToString(httpCode) + "\",\"timestamp\":\"" + getCurrentTimeOnly() + "\"}";
+    server.send(500, "application/json", errorMessage);
+    Serial.printf("Lỗi kết nối đến server nhận diện: %s\n", http.errorToString(httpCode).c_str());
+  }
+  
+  http.end();
+  esp_camera_fb_return(fb);
+}
+
+// Thêm hàm để xử lý yêu cầu status
+void handleStatus() {
+  String statusJson = "{";
+  statusJson += "\"status\":\"online\",";
+  statusJson += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  statusJson += "\"ssid\":\"" + String(ssid) + "\",";
+  
+  // Lấy thời gian hiện tại
+  struct tm timeinfo;
+  char timeStr[30] = "unknown";
+  char dateStr[30] = "unknown";
+  if (getLocalTime(&timeinfo)) {
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d", &timeinfo);
+  }
+  
+  statusJson += "\"time\":\"" + String(timeStr) + "\",";
+  statusJson += "\"date\":\"" + String(dateStr) + "\",";
+  statusJson += "\"uptime\":" + String(millis() / 1000) + ",";
+  statusJson += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
+  statusJson += "\"api_url\":\"" + String(serverUrl) + "\"";
+  statusJson += "}";
+  
+  server.send(200, "application/json", statusJson);
+}
+
+// Thêm hàm xử lý yêu cầu chụp và trả về ảnh
+void handleCaptureImage() {
+  Serial.println("Nhận yêu cầu chụp ảnh từ client");
+  
+  // Chụp ảnh từ camera
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb || fb->format != PIXFORMAT_JPEG) {
+    server.send(500, "text/plain", "Camera capture failed");
+    Serial.println("Lỗi chụp ảnh từ camera");
+    return;
+  }
+  
+  // Thiết lập headers
+  server.sendHeader("Content-Type", "image/jpeg");
+  server.sendHeader("Content-Disposition", "inline; filename=capture.jpg");
+  server.sendHeader("Connection", "close");
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  // Gửi hình ảnh về client
+  server.setContentLength(fb->len);
+  WiFiClient client = server.client();
+  client.write(fb->buf, fb->len);
+  
+  // Trả lại bộ nhớ và thông báo thành công
+  esp_camera_fb_return(fb);
+  Serial.println("Đã gửi hình ảnh về client");
+}
+
+// Thêm hàm để xử lý stream video MJPEG từ camera
+void handleStream() {
+  Serial.println("Nhận yêu cầu stream video từ client");
+  
+  WiFiClient client = server.client();
+  
+  // Thiết lập headers cho MJPEG stream
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+  client.println("Access-Control-Allow-Origin: *");
+  client.println();
+  
+  // Biến đếm lỗi camera
+  int captureErrors = 0;
+  
+  // Vòng lặp stream
+  while (client.connected()) {
+    // Chụp ảnh từ camera
+    camera_fb_t* fb = esp_camera_fb_get();
+    
+    if (!fb || fb->format != PIXFORMAT_JPEG) {
+      Serial.println("Lỗi khi chụp ảnh cho stream");
+      captureErrors++;
+      
+      // Nếu có quá nhiều lỗi liên tiếp thì thoát
+      if (captureErrors > 5) {
+        break;
+      }
+      
+      delay(1000);
+      continue;
+    }
+    
+    // Đặt lại bộ đếm lỗi
+    captureErrors = 0;
+    
+    // Gửi frame header
+    client.println();
+    client.println("--frame");
+    client.print("Content-Type: image/jpeg\r\n");
+    client.print("Content-Length: ");
+    client.println(fb->len);
+    client.println();
+    
+    // Gửi dữ liệu ảnh
+    client.write(fb->buf, fb->len);
+    client.println();
+    
+    // Giải phóng bộ nhớ
+    esp_camera_fb_return(fb);
+    
+    // Xử lý các yêu cầu server khác và chờ một chút
+    server.handleClient();
+    delay(100);
+  }
+  
+  Serial.println("Client đã ngắt kết nối stream");
+}
+
+// Thêm hàm xử lý trang chủ với giao diện HTML đơn giản
+void handleRoot() {
+  String html = "<!DOCTYPE html><html><head>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>ESP32-CAM Plant Disease Monitor</title>";
+  html += "<style>";
+  html += "body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f8ff; color: #333; }";
+  html += "h1 { color: #2c3e50; }";
+  html += ".container { max-width: 800px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }";
+  html += ".btn { display: inline-block; background-color: #3498db; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; margin: 10px 5px 10px 0; }";
+  html += ".btn:hover { background-color: #2980b9; }";
+  html += ".btn-predict { background-color: #2ecc71; }";
+  html += ".btn-predict:hover { background-color: #27ae60; }";
+  html += ".btn-stream { background-color: #e74c3c; }";
+  html += ".btn-stream:hover { background-color: #c0392b; }";
+  html += ".video-container { margin-top: 20px; text-align: center; }";
+  html += ".status { margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-radius: 5px; }";
+  html += "</style>";
+  html += "</head><body>";
+  html += "<div class='container'>";
+  html += "<h1>ESP32-CAM Plant Disease Monitor</h1>";
+  html += "<p>IP: " + WiFi.localIP().toString() + " | SSID: " + String(ssid) + "</p>";
+  
+  html += "<h2>Camera Controls</h2>";
+  html += "<a href='/capture-image' class='btn'>Capture Image</a>";
+  html += "<a href='/stream' class='btn btn-stream'>View Live Stream</a>";
+  html += "<a href='/predict' class='btn btn-predict'>Detect Disease</a>";
+  html += "<a href='/status' class='btn'>System Status</a>";
+  
+  html += "<div class='video-container'>";
+  html += "<h3>Live Preview</h3>";
+  html += "<img src='/stream' id='stream' style='max-width:100%; display:none;'>";
+  html += "<img src='/capture-image' id='capture' style='max-width:100%;'>";
+  html += "</div>";
+  
+  html += "<div class='status'>";
+  html += "<h3>How to Use</h3>";
+  html += "<ul>";
+  html += "<li><strong>Capture Image:</strong> Takes a single photo and displays it</li>";
+  html += "<li><strong>Live Stream:</strong> Shows real-time video from the camera</li>";
+  html += "<li><strong>Detect Disease:</strong> Analyzes the current view for plant diseases</li>";
+  html += "<li><strong>System Status:</strong> Shows system information and status</li>";
+  html += "</ul>";
+  html += "<p>Auto-detection scheduled daily at 6:00 AM.</p>";
+  html += "</div>";
+  
+  html += "<script>";
+  html += "document.getElementById('capture').onclick = function() {";
+  html += "  this.src = '/capture-image?' + new Date().getTime();";
+  html += "};";
+  html += "</script>";
+  html += "</div></body></html>";
+  
+  server.send(200, "text/html", html);
 }
 
 void setup() {
@@ -724,6 +1036,22 @@ void setup() {
   // Hiển thị footer
   displayFooter(WiFi.status() == WL_CONNECTED);
   
+  // Thiết lập các route cho web server
+  server.on("/", HTTP_GET, handleRoot);           // Trang chủ với giao diện điều khiển
+  server.on("/predict", HTTP_GET, handlePredict);  // Xử lý phương thức GET
+  server.on("/predict", HTTP_POST, handlePredict); // Xử lý phương thức POST
+  server.on("/status", HTTP_GET, handleStatus);    // Thêm route cho trạng thái hệ thống
+  server.on("/capture-image", HTTP_GET, handleCaptureImage); // Thêm route trả về hình ảnh
+  server.on("/stream", HTTP_GET, handleStream); // Thêm route cho stream video
+  server.begin();
+  
+  Serial.println("Web server đã sẵn sàng - truy cập:");
+  Serial.println("- http://" + WiFi.localIP().toString() + "/");
+  Serial.println("- http://" + WiFi.localIP().toString() + "/predict");
+  Serial.println("- http://" + WiFi.localIP().toString() + "/status");
+  Serial.println("- http://" + WiFi.localIP().toString() + "/capture-image");
+  Serial.println("- http://" + WiFi.localIP().toString() + "/stream");
+  
   delay(1000);
   
   // Reset bộ đếm thời gian test API
@@ -731,6 +1059,9 @@ void setup() {
 }
 
 void loop() {
+  // Xử lý yêu cầu Web Server
+  server.handleClient();
+  
   // Cập nhật thời gian
   static unsigned long lastTimeUpdate = 0;
   if (millis() - lastTimeUpdate > 1000) {
@@ -738,11 +1069,25 @@ void loop() {
     lastTimeUpdate = millis();
   }
   
-  // Test API nếu được bật
-  // testAPISend();
+  // Stream camera luôn luôn chạy, không phụ thuộc vào displayResults
+  showingImage();
   
-  // Hiển thị hình ảnh từ camera khi không đang hiển thị kết quả
-  if (!displayResults) {
-    showingImage();
+  // Nếu có kết quả để hiển thị, vẽ kết quả lên màn hình sau khi đã hiển thị camera
+  if (displayResults && !resultText.isEmpty()) {
+    showResultOnTFT(resultText);
+    
+    // Kiểm tra nếu đã hiển thị đủ lâu thì xóa kết quả
+    if (millis() - resultDisplayStartTime > RESULT_DISPLAY_DURATION) {
+      // Chỉ xóa phần hiển thị kết quả, không ảnh hưởng đến phần camera
+      int resultX = 160;
+      int resultY = 23;
+      int resultWidth = tft.width() - resultX - 5;
+      int resultHeight = tft.height() - resultY - 23;
+      tft.fillRect(resultX, resultY, resultWidth, resultHeight, COLOR_BACKGROUND);
+      
+      // Đặt lại biến hiển thị kết quả
+      displayResults = false;
+      resultText = "";
+    }
   }
 }
