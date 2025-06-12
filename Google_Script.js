@@ -1,5 +1,4 @@
 // Google Apps Script để ghi dữ liệu cảm biến vào Google Sheets
-// Sử dụng với ESP32 và DHT11 để ghi lại nhiệt độ, độ ẩm không khí và độ ẩm đất
 
 function doGet(e) {
   Logger.log("--- doGet ---");

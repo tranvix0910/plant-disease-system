@@ -12,11 +12,13 @@ WebServer server(80);
 // Cấu hình Wi-Fi
 // const char* ssid = "311HHN Lau 1";
 // const char* password = "@@1234abcdlau1";
-const char* ssid = "AndroidAP9B0A";
-const char* password = "quynhquynh";
+// const char* ssid = "AndroidAP9B0A";
+// const char* password = "quynhquynh";
+const char* ssid = "Thai Bao";
+const char* password = "0869334749";
 
 // Địa chỉ API server
-const char* serverUrl = "http://192.168.43.56:8000/predict/";
+const char* serverUrl = "http://192.168.1.119:8000/predict/";
 
 // Cấu hình thời gian   
 const char* ntpServer = "pool.ntp.org";
@@ -103,7 +105,7 @@ void cameraInit() {
 
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_QCIF; // 160x120
+  config.frame_size = FRAMESIZE_QVGA; // 320x240
   config.jpeg_quality = 12;
   config.fb_count = 1;
   config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -654,10 +656,11 @@ void showingImage() {
     Serial.println("Camera Capture Failed!");
   } else {
     tft.setRotation(0);
+    TJpgDec.setJpgScale(2);
     Serial.println("Camera Image to Display");
     
-    int offsetX = 32; // 40px
-    int offsetY = 168; // 180px
+    int offsetX = 40; // 40px
+    int offsetY = 180; // 180px
     TJpgDec.drawJpg(offsetX, offsetY, (const uint8_t*)fb->buf, fb->len);
     displayTime();
     
@@ -752,6 +755,17 @@ void testAPISend() {
 void handlePredict() {
   Serial.println("Nhận yêu cầu nhận diện bệnh từ client");
   
+  // Add CORS headers first
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  
+  // Handle preflight OPTIONS request
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(200);
+    return;
+  }
+  
   // Chụp ảnh từ camera
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb || fb->format != PIXFORMAT_JPEG) {
@@ -832,7 +846,7 @@ void handlePredict() {
       // Đặt thời gian bắt đầu hiển thị kết quả
       resultDisplayStartTime = millis();
       
-      // Trả kết quả về cho client
+      // Trả kết quả về cho client - no need to set CORS headers again
       server.send(200, "application/json", apiResult);
     } else {
       String errorMessage = "{\"error\":\"HTTP request failed with code: " + String(httpCode) + "\",\"timestamp\":\"" + getCurrentTimeOnly() + "\"}";
@@ -851,6 +865,17 @@ void handlePredict() {
 
 // Thêm hàm để xử lý yêu cầu status
 void handleStatus() {
+  // Add CORS headers
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  
+  // Handle preflight OPTIONS request
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(200);
+    return;
+  }
+  
   String statusJson = "{";
   statusJson += "\"status\":\"online\",";
   statusJson += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
@@ -879,6 +904,17 @@ void handleStatus() {
 void handleCaptureImage() {
   Serial.println("Nhận yêu cầu chụp ảnh từ client");
   
+  // Add CORS headers
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  
+  // Handle preflight OPTIONS request
+  if (server.method() == HTTP_OPTIONS) {
+    server.send(200);
+    return;
+  }
+  
   // Chụp ảnh từ camera
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb || fb->format != PIXFORMAT_JPEG) {
@@ -891,7 +927,7 @@ void handleCaptureImage() {
   server.sendHeader("Content-Type", "image/jpeg");
   server.sendHeader("Content-Disposition", "inline; filename=capture.jpg");
   server.sendHeader("Connection", "close");
-  server.sendHeader("Access-Control-Allow-Origin", "*");
+  // No need to add Access-Control-Allow-Origin again
   
   // Gửi hình ảnh về client
   server.setContentLength(fb->len);
@@ -907,11 +943,21 @@ void handleCaptureImage() {
 void handleStream() {
   Serial.println("Nhận yêu cầu stream video từ client");
   
-  WiFiClient client = server.client();
+  // Handle OPTIONS method directly for CORS preflight
+  if (server.method() == HTTP_OPTIONS) {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+    server.send(200);
+    return;
+  }
   
+  WiFiClient client = server.client();
+
   // Thiết lập headers cho MJPEG stream
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+  // Send only one Access-Control-Allow-Origin header
   client.println("Access-Control-Allow-Origin: *");
   client.println();
   
@@ -962,61 +1008,61 @@ void handleStream() {
   Serial.println("Client đã ngắt kết nối stream");
 }
 
-// Thêm hàm xử lý trang chủ với giao diện HTML đơn giản
-void handleRoot() {
-  String html = "<!DOCTYPE html><html><head>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-  html += "<title>ESP32-CAM Plant Disease Monitor</title>";
-  html += "<style>";
-  html += "body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f8ff; color: #333; }";
-  html += "h1 { color: #2c3e50; }";
-  html += ".container { max-width: 800px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }";
-  html += ".btn { display: inline-block; background-color: #3498db; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; margin: 10px 5px 10px 0; }";
-  html += ".btn:hover { background-color: #2980b9; }";
-  html += ".btn-predict { background-color: #2ecc71; }";
-  html += ".btn-predict:hover { background-color: #27ae60; }";
-  html += ".btn-stream { background-color: #e74c3c; }";
-  html += ".btn-stream:hover { background-color: #c0392b; }";
-  html += ".video-container { margin-top: 20px; text-align: center; }";
-  html += ".status { margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-radius: 5px; }";
-  html += "</style>";
-  html += "</head><body>";
-  html += "<div class='container'>";
-  html += "<h1>ESP32-CAM Plant Disease Monitor</h1>";
-  html += "<p>IP: " + WiFi.localIP().toString() + " | SSID: " + String(ssid) + "</p>";
+// // Thêm hàm xử lý trang chủ với giao diện HTML đơn giản
+// void handleRoot() {
+//   String html = "<!DOCTYPE html><html><head>";
+//   html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+//   html += "<title>ESP32-CAM Plant Disease Monitor</title>";
+//   html += "<style>";
+//   html += "body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f8ff; color: #333; }";
+//   html += "h1 { color: #2c3e50; }";
+//   html += ".container { max-width: 800px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }";
+//   html += ".btn { display: inline-block; background-color: #3498db; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; margin: 10px 5px 10px 0; }";
+//   html += ".btn:hover { background-color: #2980b9; }";
+//   html += ".btn-predict { background-color: #2ecc71; }";
+//   html += ".btn-predict:hover { background-color: #27ae60; }";
+//   html += ".btn-stream { background-color: #e74c3c; }";
+//   html += ".btn-stream:hover { background-color: #c0392b; }";
+//   html += ".video-container { margin-top: 20px; text-align: center; }";
+//   html += ".status { margin-top: 20px; padding: 10px; background-color: #f9f9f9; border-radius: 5px; }";
+//   html += "</style>";
+//   html += "</head><body>";
+//   html += "<div class='container'>";
+//   html += "<h1>ESP32-CAM Plant Disease Monitor</h1>";
+//   html += "<p>IP: " + WiFi.localIP().toString() + " | SSID: " + String(ssid) + "</p>";
   
-  html += "<h2>Camera Controls</h2>";
-  html += "<a href='/capture-image' class='btn'>Capture Image</a>";
-  html += "<a href='/stream' class='btn btn-stream'>View Live Stream</a>";
-  html += "<a href='/predict' class='btn btn-predict'>Detect Disease</a>";
-  html += "<a href='/status' class='btn'>System Status</a>";
+//   html += "<h2>Camera Controls</h2>";
+//   html += "<a href='/capture-image' class='btn'>Capture Image</a>";
+//   html += "<a href='/stream' class='btn btn-stream'>View Live Stream</a>";
+//   html += "<a href='/predict' class='btn btn-predict'>Detect Disease</a>";
+//   html += "<a href='/status' class='btn'>System Status</a>";
   
-  html += "<div class='video-container'>";
-  html += "<h3>Live Preview</h3>";
-  html += "<img src='/stream' id='stream' style='max-width:100%; display:none;'>";
-  html += "<img src='/capture-image' id='capture' style='max-width:100%;'>";
-  html += "</div>";
+//   html += "<div class='video-container'>";
+//   html += "<h3>Live Preview</h3>";
+//   html += "<img src='/stream' id='stream' style='max-width:100%; display:none;'>";
+//   html += "<img src='/capture-image' id='capture' style='max-width:100%;'>";
+//   html += "</div>";
   
-  html += "<div class='status'>";
-  html += "<h3>How to Use</h3>";
-  html += "<ul>";
-  html += "<li><strong>Capture Image:</strong> Takes a single photo and displays it</li>";
-  html += "<li><strong>Live Stream:</strong> Shows real-time video from the camera</li>";
-  html += "<li><strong>Detect Disease:</strong> Analyzes the current view for plant diseases</li>";
-  html += "<li><strong>System Status:</strong> Shows system information and status</li>";
-  html += "</ul>";
-  html += "<p>Auto-detection scheduled daily at 6:00 AM.</p>";
-  html += "</div>";
+//   html += "<div class='status'>";
+//   html += "<h3>How to Use</h3>";
+//   html += "<ul>";
+//   html += "<li><strong>Capture Image:</strong> Takes a single photo and displays it</li>";
+//   html += "<li><strong>Live Stream:</strong> Shows real-time video from the camera</li>";
+//   html += "<li><strong>Detect Disease:</strong> Analyzes the current view for plant diseases</li>";
+//   html += "<li><strong>System Status:</strong> Shows system information and status</li>";
+//   html += "</ul>";
+//   html += "<p>Auto-detection scheduled daily at 6:00 AM.</p>";
+//   html += "</div>";
   
-  html += "<script>";
-  html += "document.getElementById('capture').onclick = function() {";
-  html += "  this.src = '/capture-image?' + new Date().getTime();";
-  html += "};";
-  html += "</script>";
-  html += "</div></body></html>";
+//   html += "<script>";
+//   html += "document.getElementById('capture').onclick = function() {";
+//   html += "  this.src = '/capture-image?' + new Date().getTime();";
+//   html += "};";
+//   html += "</script>";
+//   html += "</div></body></html>";
   
-  server.send(200, "text/html", html);
-}
+//   server.send(200, "text/html", html);
+// }
 
 void setup() {
   Serial.begin(115200);
@@ -1037,16 +1083,24 @@ void setup() {
   displayFooter(WiFi.status() == WL_CONNECTED);
   
   // Thiết lập các route cho web server
-  server.on("/", HTTP_GET, handleRoot);           // Trang chủ với giao diện điều khiển
+  // server.on("/", HTTP_GET, handleRoot);           // Trang chủ với giao diện điều khiển
   server.on("/predict", HTTP_GET, handlePredict);  // Xử lý phương thức GET
   server.on("/predict", HTTP_POST, handlePredict); // Xử lý phương thức POST
+  server.on("/predict", HTTP_OPTIONS, handlePredict); // Xử lý OPTIONS requests for CORS
+  
   server.on("/status", HTTP_GET, handleStatus);    // Thêm route cho trạng thái hệ thống
+  server.on("/status", HTTP_OPTIONS, handleStatus); // Xử lý OPTIONS requests for CORS
+  
   server.on("/capture-image", HTTP_GET, handleCaptureImage); // Thêm route trả về hình ảnh
+  server.on("/capture-image", HTTP_OPTIONS, handleCaptureImage); // Xử lý OPTIONS requests for CORS
+  
   server.on("/stream", HTTP_GET, handleStream); // Thêm route cho stream video
+  server.on("/stream", HTTP_OPTIONS, handleStream); // Xử lý OPTIONS requests for CORS
+  
   server.begin();
   
   Serial.println("Web server đã sẵn sàng - truy cập:");
-  Serial.println("- http://" + WiFi.localIP().toString() + "/");
+  // Serial.println("- http://" + WiFi.localIP().toString() + "/");
   Serial.println("- http://" + WiFi.localIP().toString() + "/predict");
   Serial.println("- http://" + WiFi.localIP().toString() + "/status");
   Serial.println("- http://" + WiFi.localIP().toString() + "/capture-image");

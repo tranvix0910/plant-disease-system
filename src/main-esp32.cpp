@@ -6,6 +6,7 @@
 #include <DHT.h>
 #include <time.h>
 #include <WebServer.h>
+#include "user_interface.h"
 
 // Định nghĩa chân cảm biến
 #define DHTPIN 18     // Chân kết nối DHT11
@@ -26,8 +27,10 @@ DHT dht(DHTPIN, DHTTYPE);
 
 // const char* ssid = "311HHN Lau 1";
 // const char* password = "@@1234abcdlau1";
-const char* ssid = "AndroidAP9B0A";
-const char* password = "quynhquynh";
+// const char* ssid = "AndroidAP9B0A";
+// const char* password = "quynhquynh";
+const char* ssid = "Thai Bao";
+const char* password = "0869334749";
 
 
 const char* Gemini_Token = "AIzaSyA3ogt7LgUlDTuHqtMPZsFFompKnuYADAw";
@@ -79,6 +82,61 @@ String scheduledWateringTime = ""; // Định dạng "HH:MM"
 bool wateringScheduleActive = false;
 bool alreadyWateredToday = false;
 unsigned long wateringStartTime = 0;
+
+// Global variables to store the latest sensor readings
+float latestTemperature = 0;
+float latestHumidity = 0;
+float latestSoilMoisturePercent = 0;
+
+// Add this global variable to store the latest analysis results
+String lastAnalysisResults = "";
+bool analysisInProgress = false;
+unsigned long analysisStartTime = 0;
+
+// Add global variables to store report data similar to analysis data
+String lastReportResults = "";
+bool reportInProgress = false;
+unsigned long reportStartTime = 0;
+
+// Function to handle the API update endpoint
+void handleUpdate() {
+  // Read sensor data
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  int soilMoistureValue = analogRead(SOIL_MOISTURE_PIN);
+  float soilMoisturePercent = map(soilMoistureValue, DRY_SOIL, WET_SOIL, 0, 100);
+  soilMoisturePercent = constrain(soilMoisturePercent, 0, 100);
+  
+  // Update global variables
+  latestTemperature = temperature;
+  latestHumidity = humidity;
+  latestSoilMoisturePercent = soilMoisturePercent;
+  
+  // Create JSON response
+  String jsonResponse = "{";
+  jsonResponse += "\"temperature\":" + String(temperature, 1) + ",";
+  jsonResponse += "\"humidity\":" + String(humidity, 1) + ",";
+  jsonResponse += "\"soil_moisture\":" + String(soilMoisturePercent, 1) + ",";
+  jsonResponse += "\"pump_status\":\"" + String(digitalRead(WATER_PUMP_PIN) == HIGH ? "on" : "off") + "\",";
+  jsonResponse += "\"next_watering_time\":\"" + scheduledWateringTime + "\"";
+  jsonResponse += "}";
+  
+  // Send response
+  server.send(200, "application/json", jsonResponse);
+  
+  Serial.println("Data updated via web interface");
+}
+
+
+
+void handleRoot() {
+  // Use the latest sensor readings that are updated every 5 seconds
+  String html = String(PLANT_MONITOR_HTML);
+  html.replace("{{TEMPERATURE}}", isnan(latestTemperature) ? "--" : String(latestTemperature, 1));
+  html.replace("{{HUMIDITY}}", isnan(latestHumidity) ? "--" : String(latestHumidity, 1));
+  html.replace("{{SOIL_MOISTURE}}", String(latestSoilMoisturePercent, 1));
+  server.send(200, "text/html", html);
+}
 
 // Kiểm tra xem có đến thời gian gửi báo cáo chưa
 bool isTimeToSendDailyReport() {
@@ -211,6 +269,11 @@ void sendDetailedReportToGemini(JsonObject& summary) {
         analysis.replace("Dự báo", "🔮 Dự báo");
         analysis.replace("Rủi ro", "⚠️ Rủi ro");
         
+        // Store the analysis results for web access
+        lastAnalysisResults = reportMessage + analysis;
+        // Set analysis flag to complete
+        analysisInProgress = false;
+        
         // Gửi phân tích
         // Telegram có giới hạn kích thước tin nhắn (~4000 ký tự)
         const int MAX_MESSAGE_SIZE = 3800;
@@ -241,11 +304,15 @@ void sendDetailedReportToGemini(JsonObject& summary) {
         }
       } else {
         Serial.println("Lỗi phân tích JSON từ Gemini: " + String(error.c_str()));
+        lastAnalysisResults = "❌ Error: Could not parse Gemini response.";
+        analysisInProgress = false;
         bot.sendMessage(CHAT_ID_1, "❌ Lỗi: Không thể phân tích phản hồi từ Gemini.", "Markdown");
         bot.sendMessage(CHAT_ID_2, "❌ Lỗi: Không thể phân tích phản hồi từ Gemini.", "Markdown");
       }
     } else {
       Serial.printf("[HTTPS] POST error: %s\n", https.errorToString(httpCode).c_str());
+      lastAnalysisResults = "❌ Error: Could not connect to Gemini API.";
+      analysisInProgress = false;
       
       // Phân tích đơn giản nếu Gemini timeout
       String fallbackMessage = "📊 *BÁO CÁO PHÂN TÍCH CƠ BẢN* 📊\n\n";
@@ -322,6 +389,8 @@ void sendDetailedReportToGemini(JsonObject& summary) {
     https.end();
   } else {
     Serial.println("[HTTPS] Không thể kết nối đến Gemini");
+    lastAnalysisResults = "❌ Error: Could not connect to Gemini API.";
+    analysisInProgress = false;
     bot.sendMessage(CHAT_ID_1, "❌ Không thể kết nối đến máy chủ Gemini", "Markdown");
     bot.sendMessage(CHAT_ID_2, "❌ Không thể kết nối đến máy chủ Gemini", "Markdown");
   }
@@ -338,10 +407,15 @@ void saveDailyReport(JsonObject summary) {
 void sendDailyReport() {
   Serial.println("Đang tạo báo cáo hàng ngày...");
   
+  reportInProgress = true;
+  reportStartTime = millis();
+  
   // Lấy thời gian hiện tại
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)){
     Serial.println("Không thể lấy thời gian");
+    reportInProgress = false;
+    lastReportResults = "❌ Error: Could not get current time.";
     return;
   }
   
@@ -431,6 +505,10 @@ void sendDailyReport() {
           message += "\n📎 Đường dẫn đến báo cáo đầy đủ:\nhttps://docs.google.com/spreadsheets/d/1TL3eZKGvPJPkzvwfWgkRNlIFvacSC1WcySUlwyRMPnA/edit";
           message += "\n\n💡 Để xem phân tích chi tiết, gửi lệnh /analysis";
           
+          // Store the report for web access
+          lastReportResults = message;
+          reportInProgress = false;
+          
           // Gửi báo cáo qua Telegram
           bot.sendMessage(CHAT_ID_1, message, "Markdown");
           bot.sendMessage(CHAT_ID_2, message, "Markdown");
@@ -448,6 +526,10 @@ void sendDailyReport() {
           String message = "❌ *KHÔNG CÓ DỮ LIỆU BÁO CÁO* ❌\n\n";
           message += errorMsg;
           
+          // Store the error message for web access
+          lastReportResults = message;
+          reportInProgress = false;
+          
           bot.sendMessage(CHAT_ID_1, message, "Markdown");
           bot.sendMessage(CHAT_ID_2, message, "Markdown");
           Serial.println("Lỗi từ Google Script: " + errorMsg);
@@ -456,6 +538,10 @@ void sendDailyReport() {
           String message = "❌ *KHÔNG CÓ DỮ LIỆU BÁO CÁO* ❌\n\n";
           message += "Không có dữ liệu cho ngày " + String(dateStr);
           
+          // Store the error message for web access
+          lastReportResults = message;
+          reportInProgress = false;
+          
           bot.sendMessage(CHAT_ID_1, message, "Markdown");
           bot.sendMessage(CHAT_ID_2, message, "Markdown");
           Serial.println("Không có dữ liệu cho báo cáo hàng ngày");
@@ -463,16 +549,31 @@ void sendDailyReport() {
       } else {
         Serial.println("Lỗi phân tích JSON: " + String(error.c_str()));
         Serial.println("Dữ liệu nhận được: " + payload);
+        
+        // Store the error message for web access
+        lastReportResults = "❌ Lỗi phân tích dữ liệu báo cáo!";
+        reportInProgress = false;
+        
         bot.sendMessage(CHAT_ID_1, "❌ Lỗi phân tích dữ liệu báo cáo!", "");
         bot.sendMessage(CHAT_ID_2, "❌ Lỗi phân tích dữ liệu báo cáo!", "");
       }
     } else {
       Serial.println("Phản hồi không phải là JSON hợp lệ: " + payload);
+      
+      // Store the error message for web access
+      lastReportResults = "❌ Lỗi: Phản hồi từ máy chủ không đúng định dạng JSON!";
+      reportInProgress = false;
+      
       bot.sendMessage(CHAT_ID_1, "❌ Lỗi: Phản hồi từ máy chủ không đúng định dạng JSON!", "");
       bot.sendMessage(CHAT_ID_2, "❌ Lỗi: Phản hồi từ máy chủ không đúng định dạng JSON!", "");
     }
   } else {
     Serial.println("Lỗi kết nối HTTP, code: " + String(httpCode));
+    
+    // Store the error message for web access
+    lastReportResults = "❌ Lỗi kết nối đến Google Sheets để lấy báo cáo! Code: " + String(httpCode);
+    reportInProgress = false;
+    
     bot.sendMessage(CHAT_ID_1, "❌ Lỗi kết nối đến Google Sheets để lấy báo cáo! Code: " + String(httpCode), "");
     bot.sendMessage(CHAT_ID_2, "❌ Lỗi kết nối đến Google Sheets để lấy báo cáo! Code: " + String(httpCode), "");
   }
@@ -483,9 +584,15 @@ void sendDailyReport() {
 // Yêu cầu phân tích chi tiết từ Gemini về báo cáo đã lưu
 void requestDetailedAnalysis() {
   if (lastDailyReport.size() > 0) {
+    // Set the analysis in progress flag
+    analysisInProgress = true;
+    analysisStartTime = millis();
+    lastAnalysisResults = ""; // Clear previous results
+    
     JsonObject summary = lastDailyReport.as<JsonObject>();
     sendDetailedReportToGemini(summary);
   } else {
+    lastAnalysisResults = "❌ No recent report data available for analysis.";
     bot.sendMessage(CHAT_ID_1, "❌ Không có dữ liệu báo cáo gần đây để phân tích!", "Markdown");
     bot.sendMessage(CHAT_ID_2, "❌ Không có dữ liệu báo cáo gần đây để phân tích!", "Markdown");
   }
@@ -573,6 +680,17 @@ void sendDataToGoogleSheets() {
   }
   
   http.end();
+}
+
+// Function to handle sending data to Google Sheets from web interface
+void handleUpdateToSheets() {
+  Serial.println("Sending data to Google Sheets via web interface");
+  
+  // Call the function to send data to Google Sheets
+  sendDataToGoogleSheets();
+  
+  // Send success response
+  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Data sent to Google Sheets\"}");
 }
 
 // Function to extract values from JSON text
@@ -991,43 +1109,341 @@ void getTreatmentFromGemini(String diseaseName) {
   }
 }
 
-// Xử lý khi nhận dữ liệu bệnh từ ESP32-CAM
-void handleDiseaseRequest() {
-  if (server.hasArg("name")) {
-    predictedDisease = server.arg("name");
-    predictedDisease.replace("_", " ");
-    lastDiseaseUpdateTime = millis();
+
+// Add these new handler functions:
+// Function to handle daily report request from the web interface
+void handleDailyReport() {
+  Serial.println("Daily report requested from web interface");
+  
+  // If we already have report results, use them
+  if (lastReportResults.length() > 0) {
+    server.send(200, "text/plain", lastReportResults);
+    return;
+  }
+  
+  // If no report available, create a new one
+  // Create a buffer to send initial response
+  String reportBuffer = "";
+  
+  // First get the local time
+  struct tm timeinfo;
+  char dateStr[11];
+  if (getLocalTime(&timeinfo)) {
+    strftime(dateStr, sizeof(dateStr), "%Y-%m-%d", &timeinfo);
+    reportBuffer = "📊 DAILY REPORT for " + String(dateStr) + " 📊\n\n";
+  } else {
+    reportBuffer = "📊 DAILY REPORT 📊\n\n";
+  }
+  
+  // Use lastDailyReport if available to provide content for web interface
+  if (lastDailyReport.size() > 0) {
+    JsonObject summary = lastDailyReport.as<JsonObject>();
     
-    Serial.println("Nhận bệnh dự đoán từ ESP32-CAM: " + predictedDisease);
+    float avgTemp = summary["avgTemp"].as<float>();
+    float maxTemp = summary["maxTemp"].as<float>();
+    float minTemp = summary["minTemp"].as<float>();
+    float avgHumidity = summary["avgHumidity"].as<float>();
+    float avgSoilMoisture = summary["avgSoilMoisture"].as<float>();
+    float maxSoilMoisture = summary["maxSoilMoisture"].as<float>();
+    float minSoilMoisture = summary["minSoilMoisture"].as<float>();
+    int readings = summary["readings"];
     
-    // Thông báo qua Telegram - phần thông tin cơ bản
-    String initialMessage = "🔍 *ĐANG XỬ LÝ PHÁT HIỆN BỆNH* 🔍\n\n";
-    initialMessage += "🌱 *Loại bệnh*: " + predictedDisease + "\n";
-    initialMessage += "🕒 *Thời gian*: ";
+    reportBuffer += "Number of readings: " + String(readings) + "\n\n";
+    reportBuffer += "TEMPERATURE:\n";
+    reportBuffer += "  • Average: " + String(avgTemp, 1) + " °C\n";
+    reportBuffer += "  • Maximum: " + String(maxTemp, 1) + " °C\n";
+    reportBuffer += "  • Minimum: " + String(minTemp, 1) + " °C\n\n";
+    reportBuffer += "AVERAGE AIR HUMIDITY: " + String(avgHumidity, 1) + " %\n\n";
+    reportBuffer += "SOIL MOISTURE:\n";
+    reportBuffer += "  • Average: " + String(avgSoilMoisture, 1) + " %\n";
+    reportBuffer += "  • Maximum: " + String(maxSoilMoisture, 1) + " %\n";
+    reportBuffer += "  • Minimum: " + String(minSoilMoisture, 1) + " %\n\n";
     
-    // Thêm thông tin thời gian
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      char timeStr[30];
-      strftime(timeStr, sizeof(timeStr), "%d/%m/%Y %H:%M:%S", &timeinfo);
-      initialMessage += String(timeStr) + "\n\n";
+    reportBuffer += "ANALYSIS:\n";
+    if (avgTemp > 30) {
+      reportBuffer += "⚠️ Average temperature is high, pay attention to watering\n";
+    } else if (avgTemp < 18) {
+      reportBuffer += "⚠️ Average temperature is low, keep plants warm\n";
     } else {
-      initialMessage += "Không xác định\n\n";
+      reportBuffer += "✅ Average temperature is suitable for plant growth\n";
     }
     
-    initialMessage += "⏳ Đang phân tích và chuẩn bị khuyến nghị chi tiết...";
+    if (avgHumidity > 80) {
+      reportBuffer += "⚠️ Air humidity is high, watch for fungal diseases\n";
+    } else if (avgHumidity < 40) {
+      reportBuffer += "⚠️ Air humidity is low, increase watering\n";
+    } else {
+      reportBuffer += "✅ Air humidity is suitable for plant growth\n";
+    }
     
-    // Gửi thông báo ban đầu qua Telegram
-    bot.sendMessage(CHAT_ID_1, initialMessage, "Markdown");
-    bot.sendMessage(CHAT_ID_2, initialMessage, "Markdown");
-    
-    // Gửi OK response để ESP32-CAM biết là nhận thành công
-    server.send(200, "text/plain", "OK");
-    
-    // Gọi Gemini để xin khuyến nghị chi tiết
-    getTreatmentFromGemini(predictedDisease);
+    if (avgSoilMoisture > 80) {
+      reportBuffer += "⚠️ Soil moisture is high, reduce watering\n";
+    } else if (avgSoilMoisture < 30) {
+      reportBuffer += "⚠️ Soil moisture is low, increase watering\n";
+    } else {
+      reportBuffer += "✅ Soil moisture is suitable for root development\n";
+    }
   } else {
-    server.send(400, "text/plain", "Bad Request: Missing 'name' parameter");
+    reportBuffer += "No recent data available. Generating new report...\n";
+  }
+  
+  // Call the existing function to generate and send a new report to Telegram
+  // This will also update lastReportResults
+  sendDailyReport();
+  
+  reportBuffer += "\nA full report has been sent to Telegram.";
+  
+  // Send response to client
+  server.send(200, "text/plain", reportBuffer);
+  
+  Serial.println("Daily report sent to web client and Telegram");
+}
+
+// Function to handle detailed analysis request from the web interface
+void handleDetailedAnalysis() {
+  Serial.println("Detailed analysis requested from web interface");
+  
+  String analysisMsg = "🔍 DETAILED ANALYSIS REQUEST 🔍\n\n";
+  
+  // Check if we have data to analyze
+  if (lastDailyReport.size() > 0) {
+    analysisMsg += "Requesting detailed analysis from Gemini AI...\n\n";
+    analysisMsg += "This will analyze your plant's environmental conditions and provide recommendations for optimal growth.\n\n";
+    analysisMsg += "The complete analysis will be sent to your Telegram account.\n\n";
+    analysisMsg += "Note: Analysis can take up to 30 seconds to complete.";
+    
+    // Call the existing analysis function
+    requestDetailedAnalysis();
+  } else {
+    analysisMsg += "No recent data available for analysis.\n\n";
+    analysisMsg += "Please first generate a daily report to collect necessary data.";
+  }
+  
+  // Send a response to the client
+  server.send(200, "text/plain", analysisMsg);
+  
+  Serial.println("Detailed analysis started - results will be sent to Telegram");
+}
+
+// Add this new handler function
+void handleAnalysisResults() {
+  Serial.println("Analysis results requested from web interface");
+  
+  // Check if results are available
+  if (lastAnalysisResults.length() > 0) {
+    // Results are available, send them
+    server.send(200, "text/plain", lastAnalysisResults);
+    return;
+  } 
+  
+  // No results yet, check if analysis is in progress
+  if (analysisInProgress) {
+    // Check if it's been too long (timeout after 45 seconds)
+    if (millis() - analysisStartTime > 45000) {
+      // Analysis is taking too long, consider it failed
+      lastAnalysisResults = "❌ Analysis timed out after 45 seconds. Please try again.";
+      analysisInProgress = false;
+      server.send(200, "text/plain", lastAnalysisResults);
+    } else {
+      // Still processing
+      server.send(200, "text/plain", "No analysis results available yet. Analysis is still in progress.");
+    }
+  } else {
+    // No analysis was started or it failed
+    server.send(200, "text/plain", "No analysis results available yet. Please request an analysis first.");
+  }
+}
+
+// Add this new endpoint to get the report results
+void handleReportResults() {
+  Serial.println("Report results requested from web interface");
+  
+  // Check if results are available
+  if (lastReportResults.length() > 0) {
+    // Results are available, send them
+    server.send(200, "text/plain", lastReportResults);
+    return;
+  } 
+  
+  // No results yet, check if report is in progress
+  if (reportInProgress) {
+    // Check if it's been too long (timeout after 30 seconds)
+    if (millis() - reportStartTime > 30000) {
+      // Report generation is taking too long, consider it failed
+      lastReportResults = "❌ Report generation timed out after 30 seconds. Please try again.";
+      reportInProgress = false;
+      server.send(200, "text/plain", lastReportResults);
+    } else {
+      // Still processing
+      server.send(200, "text/plain", "No report results available yet. Report is still being generated.");
+    }
+  } else {
+    // No report was started or it failed
+    server.send(200, "text/plain", "No report results available yet. Please request a report first.");
+  }
+}
+
+// Bật bơm nước và đặt hẹn giờ tắt
+void startWaterPump() {
+  // Bật bơm nước
+  digitalWrite(WATER_PUMP_PIN, HIGH);
+  wateringStartTime = millis();
+  
+  // Lấy thời gian hiện tại
+  struct tm timeinfo;
+  char currentTimeStr[9]; // HH:MM:SS\0
+  
+  if (getLocalTime(&timeinfo)) {
+    strftime(currentTimeStr, sizeof(currentTimeStr), "%H:%M:%S", &timeinfo);
+  } else {
+    strcpy(currentTimeStr, "Không xác định");
+  }
+  
+  // Thông báo bắt đầu tưới nước
+  String message = "💧 *BẮT ĐẦU TƯỚI NƯỚC TỰ ĐỘNG* 💧\n\n";
+  message += "⏰ *Thời gian bắt đầu tưới*: " + String(currentTimeStr) + "\n";
+  message += "⏱️ *Thời lượng tưới*: " + String(PUMP_DURATION / 1000) + " giây\n";
+  
+  bot.sendMessage(CHAT_ID_1, message, "Markdown");
+  bot.sendMessage(CHAT_ID_2, message, "Markdown");
+  
+  Serial.println("Bắt đầu tưới nước tự động, thời gian hiện tại: " + String(currentTimeStr));
+}
+
+// Function to start watering pump via web interface
+void handleStartWaterPump() {
+  Serial.println("Starting water pump via web interface");
+  
+  // Call the existing startWaterPump function
+  startWaterPump();
+  
+  // Send success response
+  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Water pump started\"}");
+}
+
+// Function to set scheduled watering time via web interface
+void handleSetScheduledWateringTime() {
+  if (server.hasArg("time")) {
+    String timeArg = server.arg("time");
+    Serial.print("Setting scheduled watering time to: ");
+    Serial.println(timeArg);
+    
+    // Set the global scheduledWateringTime variable
+    scheduledWateringTime = timeArg;
+    wateringScheduleActive = true;  // Activate the watering schedule
+    alreadyWateredToday = false;    // Reset watering status
+    
+    // Send success response
+    server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Watering time scheduled\"}");
+    
+    // Send notification to Telegram
+    String message = "⏰ *WATERING SCHEDULE UPDATED* ⏰\n\n";
+    message += "New watering time set: " + timeArg;
+    
+    bot.sendMessage(CHAT_ID_1, message, "Markdown");
+    bot.sendMessage(CHAT_ID_2, message, "Markdown");
+  } else {
+    // Bad request - missing time parameter
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing time parameter\"}");
+  }
+}
+
+// Function to handle device status request
+void handleStatus() {
+  Serial.println("Status requested from web interface");
+  
+  // Get current time
+  struct tm timeinfo;
+  char timeStr[30] = "Unknown";
+  char dateStr[30] = "Unknown";
+  char uptimeStr[30] = "Unknown";
+  
+  if (getLocalTime(&timeinfo)) {
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &timeinfo);
+    strftime(dateStr, sizeof(dateStr), "%d/%m/%Y", &timeinfo);
+  }
+  
+  // Calculate uptime
+  unsigned long uptime = millis() / 1000;
+  sprintf(uptimeStr, "%d days, %d hours, %d minutes", 
+    (int)(uptime / 86400), 
+    (int)((uptime % 86400) / 3600), 
+    (int)((uptime % 3600) / 60));
+  
+  // Create JSON response
+  String jsonResponse = "{";
+  jsonResponse += "\"status\":\"Online\",";
+  jsonResponse += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  jsonResponse += "\"ssid\":\"" + String(ssid) + "\",";
+  jsonResponse += "\"time\":\"" + String(timeStr) + "\",";
+  jsonResponse += "\"date\":\"" + String(dateStr) + "\",";
+  jsonResponse += "\"uptime\":\"" + String(uptimeStr) + "\",";
+  jsonResponse += "\"free_heap\":\"" + String(ESP.getFreeHeap()) + " bytes\",";
+  jsonResponse += "\"api_url\":\"http://" + WiFi.localIP().toString() + "\"";
+  jsonResponse += "}";
+  
+  server.send(200, "application/json", jsonResponse);
+  
+  Serial.println("Status sent via web interface");
+}
+
+// Function to handle the predict endpoint
+void handlePredict() {
+  Serial.println("Prediction requested from web interface");
+  
+  // Get the current disease prediction status
+  String jsonResponse = "{";
+  jsonResponse += "\"predicted_class\":\"" + (predictedDisease == "Không có" ? "Healthy" : predictedDisease) + "\",";
+  jsonResponse += "\"confidence\":\"85%\","; // Example confidence
+  jsonResponse += "\"disease\":\"" + (predictedDisease == "Không có" ? "None" : predictedDisease) + "\"";
+  jsonResponse += "}";
+  
+  server.send(200, "application/json", jsonResponse);
+  
+  Serial.println("Prediction sent via web interface");
+}
+
+// Function to handle receiving disease data from ESP32-CAM
+void handleReceiveDisease() {
+  Serial.println("Receiving disease data from ESP32-CAM");
+  
+  // Check if we have the predicted_class parameter
+  if (server.hasArg("predicted_class")) {
+    String newDisease = server.arg("predicted_class");
+    
+    // Update our disease status
+    predictedDisease = (newDisease == "Healthy" || newDisease == "healthy") ? "Không có" : newDisease;
+    lastDiseaseUpdateTime = millis();
+    
+    Serial.print("Updated disease status: ");
+    Serial.println(predictedDisease);
+    
+    // Create response
+    String jsonResponse = "{";
+    jsonResponse += "\"status\":\"success\",";
+    jsonResponse += "\"message\":\"Disease data updated\",";
+    jsonResponse += "\"disease\":\"" + predictedDisease + "\"";
+    jsonResponse += "}";
+    
+    server.send(200, "application/json", jsonResponse);
+    
+    // If we have a disease, get treatment recommendations
+    if (predictedDisease != "Không có") {
+      // Send notification to Telegram
+      String message = "🔬 *BỆNH MỚI PHÁT HIỆN* 🔬\n\n";
+      message += "🌱 *Loại bệnh*: " + predictedDisease + "\n";
+      message += "⏰ *Thời gian phát hiện*: " + String(millis() / 1000) + " giây từ khi khởi động\n\n";
+      message += "Đang lấy khuyến nghị điều trị...";
+      
+      bot.sendMessage(CHAT_ID_1, message, "Markdown");
+      bot.sendMessage(CHAT_ID_2, message, "Markdown");
+      
+      // Get treatment recommendations
+      getTreatmentFromGemini(predictedDisease);
+    }
+  } else {
+    // No predicted_class parameter provided
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing predicted_class parameter\"}");
   }
 }
 
@@ -1056,8 +1472,21 @@ void setup() {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
   
-  // Thiết lập route cho server
-  server.on("/disease", HTTP_GET, handleDiseaseRequest);
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/update", HTTP_GET, handleUpdate);
+  server.on("/update-to-sheets", HTTP_GET, handleUpdateToSheets);
+  server.on("/report", HTTP_GET, handleDailyReport);
+  server.on("/report-results", HTTP_GET, handleReportResults);
+  server.on("/analysis", HTTP_GET, handleDetailedAnalysis);
+  server.on("/analysis-results", HTTP_GET, handleAnalysisResults);
+  
+  // Add new handlers for device status, predictions, and water control
+  server.on("/status", HTTP_GET, handleStatus);
+  server.on("/predict", HTTP_GET, handlePredict);
+  server.on("/startWaterPump", HTTP_POST, handleStartWaterPump);
+  server.on("/setScheduledWateringTime", HTTP_POST, handleSetScheduledWateringTime);
+  server.on("/receive-disease", HTTP_POST, handleReceiveDisease);
+  
   server.begin();
   Serial.println("HTTP server started");
   
@@ -1089,33 +1518,6 @@ void setup() {
   
   bot.sendMessage(CHAT_ID_1, startupMsg, "Markdown");
   bot.sendMessage(CHAT_ID_2, startupMsg, "Markdown");
-}
-
-// Bật bơm nước và đặt hẹn giờ tắt
-void startWaterPump() {
-  // Bật bơm nước
-  digitalWrite(WATER_PUMP_PIN, HIGH);
-  wateringStartTime = millis();
-  
-  // Lấy thời gian hiện tại
-  struct tm timeinfo;
-  char currentTimeStr[9]; // HH:MM:SS\0
-  
-  if (getLocalTime(&timeinfo)) {
-    strftime(currentTimeStr, sizeof(currentTimeStr), "%H:%M:%S", &timeinfo);
-  } else {
-    strcpy(currentTimeStr, "Không xác định");
-  }
-  
-  // Thông báo bắt đầu tưới nước
-  String message = "💧 *BẮT ĐẦU TƯỚI NƯỚC TỰ ĐỘNG* 💧\n\n";
-  message += "⏰ *Thời gian bắt đầu tưới*: " + String(currentTimeStr) + "\n";
-  message += "⏱️ *Thời lượng tưới*: " + String(PUMP_DURATION / 1000) + " giây\n";
-  
-  bot.sendMessage(CHAT_ID_1, message, "Markdown");
-  bot.sendMessage(CHAT_ID_2, message, "Markdown");
-  
-  Serial.println("Bắt đầu tưới nước tự động, thời gian hiện tại: " + String(currentTimeStr));
 }
 
 // Kiểm tra và thực hiện tưới nước tự động
@@ -1203,7 +1605,6 @@ void checkAndStopPump() {
       float soilMoisturePercent = map(soilMoistureValue, DRY_SOIL, WET_SOIL, 0, 100);
       soilMoisturePercent = constrain(soilMoisturePercent, 0, 100);
       
-      // Thông báo kết thúc tưới nước
       String message = "✅ *HOÀN THÀNH TƯỚI NƯỚC TỰ ĐỘNG* ✅\n\n";
       message += "⏰ *Thời gian kết thúc*: " + String(currentTimeStr) + "\n";
       message += "⏱️ *Thời lượng đã tưới*: " + String(PUMP_DURATION / 1000) + " giây\n";
@@ -1218,17 +1619,46 @@ void checkAndStopPump() {
 }
 
 void loop() {
-  // Xử lý các yêu cầu từ client
   server.handleClient();
   
-  // Kiểm tra và thực hiện tưới nước tự động
   checkAndWater();
   
-  // Kiểm tra và tắt bơm nước sau khi hết thời gian tưới
   checkAndStopPump();
   
-  // Gửi dữ liệu cảm biến định kỳ (5 phút/lần)
   unsigned long currentMillis = millis();
+  
+  // Add sensor reading every 5 seconds
+  static unsigned long lastSensorReadTime = 0;
+  if (currentMillis - lastSensorReadTime >= 5000) {
+    lastSensorReadTime = currentMillis;
+    
+    // Read sensor data
+    float temperature = dht.readTemperature();
+    float humidity = dht.readHumidity();
+    int soilMoistureValue = analogRead(SOIL_MOISTURE_PIN);
+    float soilMoisturePercent = map(soilMoistureValue, DRY_SOIL, WET_SOIL, 0, 100);
+    soilMoisturePercent = constrain(soilMoisturePercent, 0, 100);
+    
+    // Update global variables for webserver access
+    latestTemperature = temperature;
+    latestHumidity = humidity;
+    latestSoilMoisturePercent = soilMoisturePercent;
+    
+    // Print to serial monitor
+    Serial.println("===== Sensor Data (5s) =====");
+    Serial.print("Temperature: "); 
+    Serial.print(temperature); 
+    Serial.println(" °C");
+    Serial.print("Humidity: "); 
+    Serial.print(humidity); 
+    Serial.println(" %");
+    Serial.print("Soil Moisture ADC: ");
+    Serial.println(soilMoistureValue);
+    Serial.print("Soil Moisture: ");
+    Serial.print(soilMoisturePercent);
+    Serial.println(" %");
+    Serial.println("===========================");
+  }
   
   if (currentMillis - lastSendTime >= SEND_DATA_INTERVAL) {
     lastSendTime = currentMillis;
